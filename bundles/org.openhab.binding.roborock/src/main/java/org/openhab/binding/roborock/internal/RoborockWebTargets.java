@@ -48,6 +48,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Handles performing the actual HTTP requests for communicating with the Roborock API.
@@ -149,6 +151,22 @@ public class RoborockWebTargets {
      * @throws RoborockException If authentication fails.
      */
     @Nullable
+    public String requestCode(String baseUri, String email) throws RoborockException {
+        String encodedEmail = URLEncoder.encode(email, StandardCharsets.UTF_8);
+        String payload = "?username=" + encodedEmail + "&type=auth";
+        return invoke(baseUri + REQUEST_CODE_V1 + payload, HttpMethod.POST, "application/json", "header_clientlang",
+                "en");
+    }
+
+    /**
+     * Requests a 2FA code based on the user's email.
+     *
+     * @param baseUri The base URI for API calls.
+     * @param email The user's email.
+     * @return A String containing the response.
+     * @throws RoborockException If authentication fails.
+     */
+    @Nullable
     public String requestCodeV4(String baseUri, String email) throws RoborockException {
         String encodedEmail = URLEncoder.encode(email, StandardCharsets.UTF_8);
         String payload = "?email=" + encodedEmail + "&type=login&platform=";
@@ -182,7 +200,7 @@ public class RoborockWebTargets {
         String payload = "?username=" + URLEncoder.encode(email, StandardCharsets.UTF_8) + "&verifycode=" + twofa
                 + "&verifycodetype=AUTH_EMAIL_CODE";
 
-        return invoke(baseUri + GET_TOKEN_PATH + payload, HttpMethod.POST);
+        return invoke(baseUri + CODE_LOGIN + payload, HttpMethod.POST);
     }
 
     /**
@@ -302,21 +320,19 @@ public class RoborockWebTargets {
      * @return The response body as a String.
      * @throws RoborockException If there is a comms or authentication error.
      */
+
     private String invoke(String uri, HttpMethod method, String contentType, @Nullable String headerKey,
             @Nullable String headerValue, @Nullable String headerKey2, @Nullable String headerValue2)
             throws RoborockException {
         logger.debug("Calling url: {}", uri);
         String jsonResponse = "";
-
         synchronized (this) {
             try {
                 Request request = httpClient.newRequest(uri).method(method).header("content-type", contentType)
                         .header("header_clientid", safeToken).timeout(TIMEOUT_MS, TimeUnit.MILLISECONDS);
-
                 if (headerKey != null && headerValue != null) {
                     request.header(headerKey, headerValue);
                 }
-
                 if (headerKey2 != null && headerValue2 != null) {
                     request.header(headerKey2, headerValue2);
                     request.header("header_clientlang", "en");
@@ -324,11 +340,9 @@ public class RoborockWebTargets {
                     request.header("header_phonesystem", "iOS");
                     request.header("header_phonemodel", "iPhone16,1");
                 }
-
                 if (logger.isTraceEnabled()) {
                     logger.trace("{} request for {}", method, uri);
                 }
-
                 ContentResponse response = request.send();
                 int status = response.getStatus();
                 jsonResponse = response.getContentAsString();
@@ -336,6 +350,15 @@ public class RoborockWebTargets {
                 if (!jsonResponse.isEmpty()) {
                     if (logger.isTraceEnabled()) {
                         logger.trace("JSON response: '{}'", jsonResponse);
+                    }
+
+                    try {
+                        JsonObject responseObj = JsonParser.parseString(jsonResponse).getAsJsonObject();
+                        if (responseObj.has("code") && responseObj.get("code").getAsInt() == 2010) {
+                            throw new RoborockException("invalid token");
+                        }
+                    } catch (RuntimeException e) {
+                        logger.trace("Failed to parse JSON response for code 2010 detection: {}", e.getMessage());
                     }
                 }
 
@@ -350,7 +373,6 @@ public class RoborockWebTargets {
                 throw new RoborockException(String.format("%s", ex.getLocalizedMessage(), ex));
             }
         }
-
         return jsonResponse;
     }
 }

@@ -17,11 +17,13 @@ import static org.openhab.binding.shelly.internal.api1.Shelly1ApiJsonDTO.*;
 import static org.openhab.binding.shelly.internal.util.ShellyUtils.*;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jetty.client.HttpClient;
+import org.eclipse.jetty.websocket.client.WebSocketClient;
 import org.openhab.binding.shelly.internal.api.ShellyApiException;
 import org.openhab.binding.shelly.internal.api.ShellyDeviceProfile;
 import org.openhab.binding.shelly.internal.api1.Shelly1ApiJsonDTO.ShellySettingsRgbwLight;
@@ -30,7 +32,7 @@ import org.openhab.binding.shelly.internal.api1.Shelly1ApiJsonDTO.ShellyShortLig
 import org.openhab.binding.shelly.internal.api1.Shelly1ApiJsonDTO.ShellyStatusLight;
 import org.openhab.binding.shelly.internal.api1.Shelly1ApiJsonDTO.ShellyStatusLightChannel;
 import org.openhab.binding.shelly.internal.api1.Shelly1CoapServer;
-import org.openhab.binding.shelly.internal.config.ShellyBindingConfiguration;
+import org.openhab.binding.shelly.internal.config.ShellyBindingRuntimeConfig;
 import org.openhab.binding.shelly.internal.provider.ShellyChannelDefinitions;
 import org.openhab.binding.shelly.internal.provider.ShellyTranslationProvider;
 import org.openhab.core.library.types.DecimalType;
@@ -59,9 +61,9 @@ public class ShellyLightHandler extends ShellyBaseHandler {
     private final Map<Integer, ShellyColorUtils> channelColors;
 
     public ShellyLightHandler(final Thing thing, final ShellyTranslationProvider translationProvider,
-            final ShellyBindingConfiguration bindingConfig, final ShellyThingTable thingTable,
-            final Shelly1CoapServer coapServer, final HttpClient httpClient) {
-        super(thing, translationProvider, bindingConfig, thingTable, coapServer, httpClient);
+            final ShellyBindingRuntimeConfig bindingConfig, final ShellyThingTable thingTable,
+            final Shelly1CoapServer coapServer, final HttpClient httpClient, WebSocketClient webSocketClient) {
+        super(thing, translationProvider, bindingConfig, thingTable, coapServer, httpClient, webSocketClient);
         channelColors = new TreeMap<>();
     }
 
@@ -205,6 +207,19 @@ public class ShellyLightHandler extends ShellyBaseHandler {
                     logger.debug("{}: Set color effect to {}", thingName, effect);
                     validateRange("effect", effect, SHELLY_MIN_EFFECT, SHELLY_MAX_EFFECT);
                     col.setEffect(effect.intValue());
+                    break;
+
+                case CHANNEL_TIMER_AUTOON:
+                    logger.debug("{}: Set Auto-ON timer to {}", thingName, command);
+                    api.setAutoTimer(lightId, SHELLY_TIMER_AUTOON, getNumber(command).doubleValue());
+                    update = false;
+                    break;
+
+                case CHANNEL_TIMER_AUTOOFF:
+                    logger.debug("{}: Set Auto-OFF timer to {}", thingName, command);
+                    api.setAutoTimer(lightId, SHELLY_TIMER_AUTOOFF, getNumber(command).doubleValue());
+                    update = false;
+                    break;
             }
 
             if (update) {
@@ -216,7 +231,7 @@ public class ShellyLightHandler extends ShellyBaseHandler {
                 }
 
                 // send changed colors to the device
-                sendColors(profile, lightId, oldCol, col, config.brightnessAutoOn);
+                sendColors(profile, lightId, oldCol, col, config.getBrightnessAutoOn());
             }
             return true;
         } catch (ShellyApiException e) {
@@ -276,7 +291,7 @@ public class ShellyLightHandler extends ShellyBaseHandler {
     }
 
     private boolean handleFullColor(ShellyColorUtils col, Command command) throws IllegalArgumentException {
-        String color = command.toString().toLowerCase();
+        String color = command.toString().toLowerCase(Locale.ROOT);
         if (color.contains(",")) {
             col.fromRGBW(color);
         } else if (color.equals(SHELLY_COLOR_RED)) {
@@ -360,7 +375,7 @@ public class ShellyLightHandler extends ShellyBaseHandler {
                 postEvent(ALARM_TYPE_OVERPOWER, false);
             }
 
-            if (profile.inColor || (profile.isGen2 && profile.isRGBW2)) {
+            if (profile.inColor) {
                 logger.trace("{}: update color settings", thingName);
                 col.setRGBW(getInteger(light.red), getInteger(light.green), getInteger(light.blue),
                         getInteger(light.white));
@@ -383,7 +398,7 @@ public class ShellyLightHandler extends ShellyBaseHandler {
                 updated |= updateChannel(colorGroup, CHANNEL_COLOR_PICKER, col.toHSB());
             }
 
-            if ((!profile.inColor && !profile.isGen2) || profile.isBulb) {
+            if (updatesWhiteChannels(profile)) {
                 String whiteGroup = buildWhiteGroupName(profile, channelId);
                 col.setBrightness(getInteger(light.brightness));
                 updated |= updateChannel(whiteGroup, CHANNEL_BRIGHTNESS + "$Switch", col.power);
@@ -403,6 +418,11 @@ public class ShellyLightHandler extends ShellyBaseHandler {
             lightId++;
         }
         return updated;
+    }
+
+    // Bulbs always report white/temp alongside color; RGBW2/RGBW PM only while not in color mode.
+    private static boolean updatesWhiteChannels(ShellyDeviceProfile profile) {
+        return profile.isBulb || (!profile.inColor && (!profile.isGen2 || profile.isRGBW2));
     }
 
     private void createLightChannels(ShellyStatusLightChannel status, int idx) {
@@ -465,7 +485,7 @@ public class ShellyLightHandler extends ShellyBaseHandler {
         if (autoOn && (newCol.brightness >= 0)) {
             parms.put(SHELLY_LIGHT_TURN, profile.inColor || newCol.brightness > 0 ? SHELLY_API_ON : SHELLY_API_OFF);
         }
-        if (profile.inColor || (profile.isGen2 && profile.isRGBW2)) {
+        if (profile.inColor) {
             if (oldCol.red != newCol.red || oldCol.green != newCol.green || oldCol.blue != newCol.blue
                     || oldCol.white != newCol.white) {
                 logger.debug("{}: Setting RGBW to {}/{}/{}/{}", thingName, newCol.red, newCol.green, newCol.blue,
